@@ -39,36 +39,81 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
         $this->register_post_type( array() );
         $post_types = $this->get_post_types();
 
+
         $max_subscribers = mt_rand( 2, 40 );
-        for ( $i = 1; $i <= $max_subscribers; $i++ ) {
-            $email = 'subscriber' . $i . '@example.com';
-            $autopt = (bool)mt_rand(0,1);
-            $meta = array();
-
-            // Get a random number of post types or nothing
-            $set_post_types = (bool)mt_rand(0,1);
-            if ( $set_post_types ) {
-                $set_empty_array = (bool)mt_rand(0,1);
-                if ( $set_empty_array ) {
-                    $user_post_types = array();
-                }
-                else {
-                    $user_post_types = array_rand( $post_types, mt_rand( 1, count( $post_types ) ) );
-                    if ( ! is_array( $user_post_types ) )
-                        $user_post_types = array( $user_post_types );
-                }
-
-                $meta['subscription_post_types'] = $user_post_types;
-            }
-            
-            $this->raw_subscribers[ $email ] = array(
-                'email' => $email,
+        $this->raw_subscribers = array(
+            'settings_not_touched@example.com' => array(
+                'email' => 'settings_not_touched@example.com',
                 'note' => $note,
                 'type' => $type,
-                'flag' => $autopt,
-                'meta' => $meta
-            );
-            Incsub_Subscribe_By_Email::subscribe_user( $email, $note, $type, $autopt, $meta );
+                'flag' => true,
+                'meta' => array()
+            ),
+            'he_wants_only_posts@example.com' => array(
+                'email' => 'he_wants_only_posts@example.com',
+                'note' => $note,
+                'type' => $type,
+                'flag' => true,
+                'meta' => array(
+                    'subscription_post_types' => array( 'post' )
+                )
+            ),
+            'he_wants_only_books@example.com' => array(
+                'email' => 'he_wants_only_books@example.com',
+                'note' => $note,
+                'type' => $type,
+                'flag' => true,
+                'meta' => array(
+                    'subscription_post_types' => array( 'book' )
+                )
+            ),
+            'he_does_not_want_anything@example.com' => array(
+                'email' => 'he_does_not_want_anything@example.com',
+                'note' => $note,
+                'type' => $type,
+                'flag' => true,
+                'meta' => array(
+                    'subscription_post_types' => array()
+                )
+            ),
+            'not_confirmed@example.com' => array(
+                'email' => 'not_confirmed@example.com',
+                'note' => $note,
+                'type' => $type,
+                'flag' => false,
+                'meta' => array()
+            ),
+            'he_wants_everything@example.com' => array(
+                'email' => 'he_wants_everything@example.com',
+                'note' => $note,
+                'type' => $type,
+                'flag' => true,
+                'meta' => array(
+                    'subscription_post_types' => $post_types
+                )
+            ),
+            'he_wants_posts_and_pages@example.com' => array(
+                'email' => 'he_wants_posts_and_pages@example.com',
+                'note' => $note,
+                'type' => $type,
+                'flag' => true,
+                'meta' => array(
+                    'subscription_post_types' => array( 'post', 'page' )
+                )
+            ),
+            'he_wants_everything_but_is_not_confirmed@example.com' => array(
+                'email' => 'he_wants_everything_but_is_not_confirmed@example.com',
+                'note' => $note,
+                'type' => $type,
+                'flag' => false,
+                'meta' => array(
+                    'subscription_post_types' => $post_types
+                )
+            ),
+        );
+
+        foreach ( $this->raw_subscribers as $email => $raw_subscriber ) {
+            Incsub_Subscribe_By_Email::subscribe_user( $email, $raw_subscriber['note'], $raw_subscriber['type'], $raw_subscriber['flag'], $raw_subscriber['meta'] );
         }
 
     }
@@ -84,6 +129,14 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
         unset( $post_types['revision'] );
         unset( $post_types['subscriber'] );
         return $post_types;
+    }
+
+    function get_queue_items( $log_id ) {
+        $args = array( 
+            'campaign_id' => $log_id, 
+            'per_page' => -1
+        );
+        return incsub_sbe_get_queue_items( $args );
     }
 
     function test_subscribe_users() {
@@ -129,83 +182,141 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
         }
     }
 
-    function test_enqueue_immediately_mails() {
-        $this->insert_data_tests();
+    function insert_immediately_posts() {
+        return $this->factory->post->create_object( $this->factory->post->generate_args() );
+    }
 
+    function set_immediately_settings() {
         $settings = incsub_sbe_get_settings();
         // Yep, there's a typo
         $settings['frequency'] = 'inmediately';
         incsub_sbe_update_settings( $settings );
+    }
+
+    /**
+     * @group immediately
+     */
+    function test_enqueue_immediately_mails() {
+        $this->insert_data_tests();
+        $this->set_immediately_settings();
+        $post_id = $this->insert_immediately_posts();
 
         $settings = incsub_sbe_get_settings();
-
-        $post_id = $this->factory->post->create_object( $this->factory->post->generate_args() );
-
         $model = incsub_sbe_get_model();
+
+        // Remaining campaign
         $remaining_batch = $model->get_remaining_batch_mail();
         $log_id = $remaining_batch->campaign_id;
 
         $this->assertEquals( array( $post_id ), $remaining_batch->campaign_settings['posts_ids'] );
 
-        $args = array( 
-            'campaign_id' => $log_id, 
-            'per_page' => -1
-        );
-        $queue_items = incsub_sbe_get_queue_items( $args );
+        $queue_items = $this->get_queue_items( $log_id );
 
         $confirmed_subscribers = wp_list_filter( $this->raw_subscribers, array( 'flag' => true ) );
         $this->assertCount( count( $confirmed_subscribers ), $queue_items['items'] );
 
         foreach ( $queue_items['items'] as $item ) {
-            $item->get_subscriber_posts();
+            $user_posts = $item->get_subscriber_posts();
+
             $raw_subscriber = $this->raw_subscribers[ $item->subscriber_email ];
-            if ( ! isset( $raw_subscriber['subscription_post_types'] ) )
+
+            if ( ! isset( $raw_subscriber['meta']['subscription_post_types'] ) )
                 $user_post_types = $this->get_post_types();
             else
-                $user_post_types = $raw_subscriber['subscription_post_types'];
+                $user_post_types = $raw_subscriber['meta']['subscription_post_types'];
 
-            $queue_item_post_types = wp_list_pluck( $item->get_queue_item_posts(), 'post_type' );
-
-            foreach ( $queue_item_post_types as $post_type )
-                $this->assertTrue( in_array( $post_type, $user_post_types ) );
+            if ( empty( $user_posts ) ) {
+                $this->assertFalse( in_array( get_post_type( $post_id ), $user_post_types ) );
+            }
+            else {
+                $this->assertTrue( in_array( get_post_type( $post_id ), $user_post_types ) );
+            }
             
         }
 
     }
 
-    function test_enqueue_daily_mails() {
+    /**
+     * @group immediately
+     */
+    function test_send_immediately_mails() {
         global $subscribe_by_email_plugin;
 
         $this->insert_data_tests();
+        $this->set_immediately_settings();
+        $post_id = $this->insert_immediately_posts();
 
+        $settings = incsub_sbe_get_settings();
+
+        $post_id = $this->insert_immediately_posts();
+        $post_type = get_post_type( $post_id );
+
+        delete_transient( Incsub_Subscribe_By_Email::$pending_mails_transient_slug );
+
+        $result = $subscribe_by_email_plugin->maybe_send_pending_emails();
+
+        $confirmed_subscribers = wp_list_filter( $this->raw_subscribers, array( 'flag' => true ) );
+
+        $this->assertCount( count( $result ), $confirmed_subscribers );
+        
+        foreach ( $result as $email => $status ) {
+            $raw_subscriber = $this->raw_subscribers[ $email ];
+
+            if ( ! isset( $raw_subscriber['meta']['subscription_post_types'] ) )
+                $user_post_types = $this->get_post_types();
+            else
+                $user_post_types = $raw_subscriber['meta']['subscription_post_types'];
+
+            if ( in_array( $post_type, $user_post_types ) )
+                $this->assertEquals( 1, $status ); // Sending OK
+            else
+                $this->assertEquals( 3, $status ); // Empty user content
+        }
+    }
+
+    function insert_daily_posts() {
+        $posts_ids = array();
+        
+        $args = $this->factory->post->generate_args();
+        $args['post_type'] = 'post';
+        $posts_ids[] = $this->factory->post->create_object( $args );
+
+        $args = $this->factory->post->generate_args();
+        $args['post_type'] = 'page';
+        $posts_ids[] = $this->factory->post->create_object( $args );
+
+        $args = $this->factory->post->generate_args();
+        $args['post_type'] = 'book';
+        $posts_ids[] = $this->factory->post->create_object( $args );
+
+        return $posts_ids;
+    }
+
+    function set_daily_settings() {
         $settings = incsub_sbe_get_settings();
         $settings['frequency'] = 'daily';
 
         // This does not matter
         $settings['time'] = 3;
-
-        // Let's select post types randomly
-        $settings['post_types'] = array_rand( $this->get_post_types(), mt_rand( 1, count( $this->get_post_types() ) ) );
-        if ( ! is_array( $settings['post_types'] ) )
-            $settings['post_types'] = array( $settings['post_types'] );
-
-        $settings['post_types'] = array( 'post', 'page', 'book' );
+        $settings['post_types'] = array( 'post', 'page' );
         
         // Set the next day schedules
         Incsub_Subscribe_By_Email::set_next_day_schedule_time( $settings['time'] );
 
         incsub_sbe_update_settings( $settings );
+    }
+
+    /**
+     * @group daily
+     */
+    function test_enqueue_daily_mails() {
+        global $subscribe_by_email_plugin;
+
+        $this->insert_data_tests();
+        $this->set_daily_settings();
+        $posts_ids = $this->insert_daily_posts();
 
         $settings = incsub_sbe_get_settings();
-
-        // Create a few posts of random post types
-        $posts_no = rand( 1, 5 );
-        $posts_ids = array();
-        for ( $i = 1; $i <= $posts_no ; $i++ ) { 
-            $args = $this->factory->post->generate_args();
-            $args['post_type'] = array_rand( $this->get_post_types() );
-            $posts_ids[] = $this->factory->post->create_object( $args );
-        }
 
         // We are going to create an old post too
         $args = $this->factory->post->generate_args();
@@ -224,11 +335,6 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
 
         // Here's the campagin
         $remaining_batch = $model->get_remaining_batch_mail();
-        if ( empty( $remaining_batch ) ) {
-            // This could happen in one case because any of the posts created are in the settings['post_types']
-            // It's better if we repeat the test
-            $this->test_enqueue_daily_mails();
-        }
 
         // The old post should not be there
         $this->assertFalse( in_array( $old_post_id, $remaining_batch->campaign_settings['posts_ids'] ) );
@@ -241,12 +347,7 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
         }
 
         // Get all queue items pending
-        $log_id = $remaining_batch->campaign_id;
-        $args = array( 
-            'campaign_id' => $log_id, 
-            'per_page' => -1
-        );
-        $queue_items = incsub_sbe_get_queue_items( $args );
+        $queue_items = $this->get_queue_items( $remaining_batch->campaign_id );
 
         // Filter only confirmed users
         $confirmed_subscribers = wp_list_filter( $this->raw_subscribers, array( 'flag' => true ) );
@@ -256,76 +357,135 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
 
         // Check that we are sending only posts IDs that the subscriber wants
         foreach ( $queue_items['items'] as $item ) {
-            $item->get_subscriber_posts();
+            $user_posts = $item->get_subscriber_posts();
+
             $raw_subscriber = $this->raw_subscribers[ $item->subscriber_email ];
-            if ( ! isset( $raw_subscriber['subscription_post_types'] ) )
+
+            if ( ! isset( $raw_subscriber['meta']['subscription_post_types'] ) )
                 $user_post_types = $this->get_post_types();
             else
-                $user_post_types = $raw_subscriber['subscription_post_types'];
+                $user_post_types = $raw_subscriber['meta']['subscription_post_types'];
 
-            $queue_item_post_types = wp_list_pluck( $item->get_queue_item_posts(), 'post_type' );
-            foreach ( $queue_item_post_types as $post_type )
-                $this->assertTrue( in_array( $post_type, $user_post_types ) );
+            foreach ( $user_posts as $user_post ) {
+                $this->assertTrue( in_array( get_post_type( $user_post->ID ), $user_post_types ) );
+            }
             
         }
 
     }
 
-    function insert_weekly_posts() {
-        // Create a few posts of random post types
-        $posts_no = rand( 1, 5 );
-        $posts_ids = array();
-        for ( $i = 1; $i <= $posts_no ; $i++ ) { 
-            $args = $this->factory->post->generate_args();
-            $args['post_type'] = array_rand( $this->get_post_types() );
-            // One week in seconds as max
-            $seed = mt_rand( 1, 604799 );
-            $args['post_date'] = date( 'Y-m-d H:i:s', current_time( 'timestamp' ) - $seed );
-            $args['post_date_gmt'] = date( 'Y-m-d H:i:s', current_time( 'timestamp', true ) - $seed );
-            $posts_ids[] = $this->factory->post->create_object( $args );
-        }
+    /**
+     * @group daily
+     */
+    function test_send_daily_posts() {
+        global $subscribe_by_email_plugin;
+
+        $this->insert_data_tests();
+        $this->set_daily_settings();
+        $posts_ids = $this->insert_daily_posts();
+
+        $settings = incsub_sbe_get_settings();
 
         // We are going to create an old post too
         $args = $this->factory->post->generate_args();
-        $args['post_date'] = date( 'Y-m-d H:i:s', current_time( 'timestamp' ) - 2592000 ); 
-        $args['post_date_gmt'] = date( 'Y-m-d H:i:s', current_time( 'timestamp', true ) - 2592000 );
+        $args['post_date'] = date( 'Y-m-d H:i:s', current_time( 'timestamp' ) - 259200 ); 
+        $args['post_date_gmt'] = date( 'Y-m-d H:i:s', current_time( 'timestamp', true ) - 259200 );
         $args['post_type'] = array_rand( $this->get_post_types() ); 
         $old_post_id = $this->factory->post->create_object( $args );
 
-        return compact( 'posts_ids', 'old_post_id' );
+        // Clean the daily option that makes the daily digest to be triggered
+        update_option( Incsub_Subscribe_By_Email::$freq_daily_transient_slug, 1 );
+
+        // This should enqueue all the emails
+        $subscribe_by_email_plugin->process_scheduled_subscriptions();
+
+        delete_transient( Incsub_Subscribe_By_Email::$pending_mails_transient_slug );
+
+        $result = $subscribe_by_email_plugin->maybe_send_pending_emails();
+
+        // Here are all post types that we have sent
+        $sent_post_types = array();
+        foreach ( $posts_ids as $post_id ) {
+            $post_type = get_post_type( $post_id );
+            if ( in_array( $post_type, $settings['post_types'] ) )
+                $sent_post_types[] = get_post_type( $post_id );    
+        }
+        $sent_post_types = array_unique( $sent_post_types );
+
+        // Now check the status of every sending
+        foreach ( $result as $email => $status ) {
+            $raw_subscriber = $this->raw_subscribers[ $email ];
+
+            if ( ! isset( $raw_subscriber['meta']['subscription_post_types'] ) )
+                $user_post_types = $this->get_post_types();
+            else
+                $user_post_types = $raw_subscriber['meta']['subscription_post_types'];
+
+            if ( ! empty( array_intersect( $user_post_types, $sent_post_types ) ) ) {
+                $this->assertEquals( 1, $status );
+            }
+            else {
+                $this->assertEquals( 3, $status );   
+            }
+        }
+
+
+    }
+
+
+    function insert_weekly_posts() {
+        $posts_ids = array();
+        
+        $args = $this->factory->post->generate_args();
+        $args['post_type'] = 'post';
+        $posts_ids[] = $this->factory->post->create_object( $args );
+
+        $args = $this->factory->post->generate_args();
+        $args['post_type'] = 'page';
+        $args['post_date'] = date( 'Y-m-d H:i:s', current_time( 'timestamp' ) - 259200 );
+        $posts_ids[] = $this->factory->post->create_object( $args );
+
+        $args = $this->factory->post->generate_args();
+        $args['post_type'] = 'book';
+        $posts_ids[] = $this->factory->post->create_object( $args );
+
+        return $posts_ids;
     }
 
     function set_weekly_settings() {
         $settings = incsub_sbe_get_settings();
         $settings['frequency'] = 'weekly';
-        $settings['mails_batch_size'] = 100;
 
         // This does not matter
-        $settings['day_of_week'] = 3;
         $settings['time'] = 3;
+        $settings['day_of_the_week'] = 3;
 
-        // Let's select post types randomly
-        $settings['post_types'] = array_rand( $this->get_post_types(), mt_rand( 1, count( $this->get_post_types() ) ) );
-        if ( ! is_array( $settings['post_types'] ) )
-            $settings['post_types'] = array( $settings['post_types'] );
-
-        $settings['post_types'] = array( 'post', 'page', 'book' );
+        $settings['post_types'] = array( 'post', 'page' );
         
         // Set the next day schedules
-        Incsub_Subscribe_By_Email::set_next_week_schedule_time( 3, 2 );
+        Incsub_Subscribe_By_Email::set_next_week_schedule_time( $settings['day_of_the_week'], $settings['time'] );
 
         incsub_sbe_update_settings( $settings );
     }
 
+    /**
+     * @group weekly
+     */
     function test_enqueue_weekly_mails() {
         global $subscribe_by_email_plugin;
 
         $this->insert_data_tests();
         $this->set_weekly_settings();
-        $posts = $this->insert_weekly_posts();
-        extract( $posts );
+        $posts_ids = $this->insert_weekly_posts();
 
         $settings = incsub_sbe_get_settings();
+
+        // We are going to create an old post too
+        $args = $this->factory->post->generate_args();
+        $args['post_date'] = date( 'Y-m-d H:i:s', current_time( 'timestamp' ) - 2259200 ); 
+        $args['post_date_gmt'] = date( 'Y-m-d H:i:s', current_time( 'timestamp', true ) - 2259200 );
+        $args['post_type'] = array_rand( $this->get_post_types() ); 
+        $old_post_id = $this->factory->post->create_object( $args );
 
         // Clean the weekly option that makes the weekly digest to be triggered
         update_option( Incsub_Subscribe_By_Email::$freq_weekly_transient_slug, 1 );
@@ -337,11 +497,6 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
 
         // Here's the campagin
         $remaining_batch = $model->get_remaining_batch_mail();
-        if ( empty( $remaining_batch ) ) {
-            // This could happen in one case because any of the posts created are in the settings['post_types']
-            // It's better if we repeat the test
-            $this->test_enqueue_weekly_mails();
-        }
 
         // The old post should not be there
         $this->assertFalse( in_array( $old_post_id, $remaining_batch->campaign_settings['posts_ids'] ) );
@@ -354,12 +509,7 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
         }
 
         // Get all queue items pending
-        $log_id = $remaining_batch->campaign_id;
-        $args = array( 
-            'campaign_id' => $log_id, 
-            'per_page' => -1
-        );
-        $queue_items = incsub_sbe_get_queue_items( $args );
+        $queue_items = $this->get_queue_items( $remaining_batch->campaign_id );
 
         // Filter only confirmed users
         $confirmed_subscribers = wp_list_filter( $this->raw_subscribers, array( 'flag' => true ) );
@@ -369,30 +519,41 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
 
         // Check that we are sending only posts IDs that the subscriber wants
         foreach ( $queue_items['items'] as $item ) {
-            $item->get_subscriber_posts();
+            $user_posts = $item->get_subscriber_posts();
+
             $raw_subscriber = $this->raw_subscribers[ $item->subscriber_email ];
-            if ( ! isset( $raw_subscriber['subscription_post_types'] ) )
+
+            if ( ! isset( $raw_subscriber['meta']['subscription_post_types'] ) )
                 $user_post_types = $this->get_post_types();
             else
-                $user_post_types = $raw_subscriber['subscription_post_types'];
+                $user_post_types = $raw_subscriber['meta']['subscription_post_types'];
 
-            $queue_item_post_types = wp_list_pluck( $item->get_queue_item_posts(), 'post_type' );
-            foreach ( $queue_item_post_types as $post_type )
-                $this->assertTrue( in_array( $post_type, $user_post_types ) );
+            foreach ( $user_posts as $user_post ) {
+                $this->assertTrue( in_array( get_post_type( $user_post->ID ), $user_post_types ) );
+            }
             
         }
 
     }
 
-    function test_send_weekly_digest() {
+    /**
+     * @group weekly
+     */
+    function test_send_weekly_posts() {
         global $subscribe_by_email_plugin;
 
         $this->insert_data_tests();
         $this->set_weekly_settings();
-        $posts = $this->insert_weekly_posts();
-        extract( $posts );
+        $posts_ids = $this->insert_weekly_posts();
 
         $settings = incsub_sbe_get_settings();
+
+        // We are going to create an old post too
+        $args = $this->factory->post->generate_args();
+        $args['post_date'] = date( 'Y-m-d H:i:s', current_time( 'timestamp' ) - 259200 ); 
+        $args['post_date_gmt'] = date( 'Y-m-d H:i:s', current_time( 'timestamp', true ) - 259200 );
+        $args['post_type'] = array_rand( $this->get_post_types() ); 
+        $old_post_id = $this->factory->post->create_object( $args );
 
         // Clean the weekly option that makes the weekly digest to be triggered
         update_option( Incsub_Subscribe_By_Email::$freq_weekly_transient_slug, 1 );
@@ -400,42 +561,196 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
         // This should enqueue all the emails
         $subscribe_by_email_plugin->process_scheduled_subscriptions();
 
-        $model = incsub_sbe_get_model();
-        $remaining_batch = $model->get_remaining_batch_mail();
-        if ( empty( $remaining_batch ) ) {
-            // This could happen in one case because any of the posts created are in the settings['post_types']
-            // It's better if we repeat the test
-            $this->test_send_weekly_digest();
-        }
-        
-        $log_id = $remaining_batch->campaign_id;
-        $args = array( 
-            'campaign_id' => $log_id, 
-            'per_page' => -1
-        );
-        $queue_items = incsub_sbe_get_queue_items( $args );
-
         delete_transient( Incsub_Subscribe_By_Email::$pending_mails_transient_slug );
 
         $result = $subscribe_by_email_plugin->maybe_send_pending_emails();
 
-        // Filter only confirmed users
-        $confirmed_subscribers = wp_list_filter( $this->raw_subscribers, array( 'flag' => true ) );
+        // Here are all post types that we have sent
+        $sent_post_types = array();
+        foreach ( $posts_ids as $post_id ) {
+            $post_type = get_post_type( $post_id );
+            if ( in_array( $post_type, $settings['post_types'] ) )
+                $sent_post_types[] = get_post_type( $post_id );    
+        }
+        $sent_post_types = array_unique( $sent_post_types );
 
-        $this->assertCount( count( $confirmed_subscribers ), $result );
+        // Now check the status of every sending
+        foreach ( $result as $email => $status ) {
+            $raw_subscriber = $this->raw_subscribers[ $email ];
 
-        foreach ( $queue_items['items'] as $item ) {
-            $item->get_subscriber_posts();
-            $raw_subscriber = $this->raw_subscribers[ $item->subscriber_email ];
-            $sent_status = $result[ $item->subscriber_email ];
-
-            if ( ! isset( $raw_subscriber['subscription_post_types'] ) )
+            if ( ! isset( $raw_subscriber['meta']['subscription_post_types'] ) )
                 $user_post_types = $this->get_post_types();
             else
-                $user_post_types = $raw_subscriber['subscription_post_types'];
+                $user_post_types = $raw_subscriber['meta']['subscription_post_types'];
 
+            if ( ! empty( array_intersect( $user_post_types, $sent_post_types ) ) ) {
+                $this->assertEquals( 1, $status );
+            }
+            else {
+                $this->assertEquals( 3, $status );   
+            }
+        }
+
+
+    }
+
+    /**
+     * @group immediately
+     */
+    function test_delete_subscriber_after_enqueueing() {
+        global $subscribe_by_email_plugin;
+
+        $this->insert_data_tests();
+        $this->set_immediately_settings();
+        $post_id = $this->insert_immediately_posts();
+
+        $settings = incsub_sbe_get_settings();
+
+        $post_id = $this->insert_immediately_posts();
+        $post_type = get_post_type( $post_id );
+
+        delete_transient( Incsub_Subscribe_By_Email::$pending_mails_transient_slug );
+
+        // Let's delete the first subscriber
+        reset( $this->raw_subscribers );
+        $email_deleted = key( $this->raw_subscribers );
+        incsub_sbe_cancel_subscription( $email_deleted );
+        reset( $this->raw_subscribers );
+
+
+        $result = $subscribe_by_email_plugin->maybe_send_pending_emails();
+
+        $confirmed_subscribers = wp_list_filter( $this->raw_subscribers, array( 'flag' => true ) );
+
+        $this->assertCount( count( $result ), $confirmed_subscribers );
+        
+        foreach ( $result as $email => $status ) {
+            if ( $email === $email_deleted ) {
+                $this->assertEquals( 5, $status );
+                continue;
+            }
+
+            $raw_subscriber = $this->raw_subscribers[ $email ];
+
+            if ( ! isset( $raw_subscriber['meta']['subscription_post_types'] ) )
+                $user_post_types = $this->get_post_types();
+            else
+                $user_post_types = $raw_subscriber['meta']['subscription_post_types'];
+
+            if ( in_array( $post_type, $user_post_types ) )
+                $this->assertEquals( 1, $status ); // Sending OK
+            else
+                $this->assertEquals( 3, $status ); // Empty user content
+        }
+    }
+
+    /**
+     * @group upgrade
+     */
+    function test_upgrade_to_29() {
+        global $subscribe_by_email_plugin;
+        update_option( 'incsub_sbe_version', '2.8.3' );
+
+        // We need some data to upgrade
+        global $wpdb;
+        global $wp_filesystem;
+
+        $log_table = $wpdb->prefix . 'subscriptions_log_table';
+
+        $args = $this->factory->post->generate_args();
+        $args['post_type'] = 'post';
+        $post_id_1 = $this->factory->post->create_object( $args );
+
+        $args = $this->factory->post->generate_args();
+        $args['post_type'] = 'book';
+        $post_id_2 = $this->factory->post->create_object( $args );
+
+        $args = $this->factory->post->generate_args();
+        $args['post_type'] = 'post';
+        $post_id_3 = $this->factory->post->create_object( $args );
+
+        $this->insert_data_tests();
+
+        $confirmed_subscribers = wp_list_filter( $this->raw_subscribers, array( 'flag' => true ) );
+
+        $max_subscriber_id = $wpdb->get_var( "SELECT MAX(ID) FROM $wpdb->posts WHERE post_type='subscriber' AND post_status='publish'" );
+
+        // First campaign (an immediately one)
+        $settings = maybe_serialize( array( 'posts_ids' => array( $post_id_1 ) ) );
+
+        $testing_logs = array(
+            array(
+                'mail_recipients' => 3,
+                'max_subscriber_id' => $max_subscriber_id,
+                'settings' => maybe_serialize( array( 'posts_ids' => array( $post_id_1 ) ) )
+            ),
+            array(
+                'mail_recipients' => 1,
+                'max_subscriber_id' => $max_subscriber_id - 2,
+                'settings' => maybe_serialize( array( 'posts_ids' => array( $post_id_2, $post_id_3 ) ) )
+            ),
+            array(
+                'mail_recipients' => count( $confirmed_subscribers ),
+                'max_subscriber_id' => $max_subscriber_id - 1,
+                'settings' => ''
+            )
+        );
+
+        foreach ( $testing_logs as $key => $testing_log ) {
+            extract( $testing_log );
+            $wpdb->query( 
+                "INSERT INTO $log_table (mail_subject, mail_recipients, mail_date, mail_settings, mails_list, max_email_ID ) 
+                VALUES ( 'New post', $mail_recipients, 1412775393, '$settings', '', $max_subscriber_id );"
+            );
+
+            $log_id = $wpdb->insert_id;
+
+            // Delete the old log
+            $log_file = INCSUB_SBE_LOGS_DIR . '/sbe_log_' . $log_id . '.log';
+            @unlink( $log_file );
+
+            // Write the log (only already sent emails)
+            reset( $confirmed_subscribers );
+            for( $i = 0; $i < $mail_recipients; $i++ ) {
+                $email = key( $confirmed_subscribers );
+                next( $confirmed_subscribers );
+
+                $date = current_time( 'timestamp' );
+                $line = $email . '|' . time() . '|1';
+                $fp = @fopen( $log_file, 'a+' );
+
+                @fwrite( $fp, $line . "\n" );
+                @fclose( $fp );
+            }
+
+            $testing_logs[ $key ]['log_id'] = $log_id;
+        } 
+
+        // Testing the upgrade
+        $subscribe_by_email_plugin->maybe_upgrade();        
+
+        $queue_table = $wpdb->base_prefix . 'subscriptions_queue';
+        $queue = $wpdb->get_results( "SELECT * FROM $queue_table" );
+
+        $queue_items = array();
+        foreach ( $queue as $item ) {
+            $queue_items[] = incsub_sbe_get_queue_item( $item->id );
+        }
+
+        foreach ( $testing_logs as $testing_log ) {
+            extract( $testing_log );
+            $campaign_queue = wp_list_filter( $queue_items, array( 'campaign_id' => $log_id ) );
+            $campaign_subscribers = $wpdb->get_var( "SELECT COUNT(ID) FROM $wpdb->posts WHERE post_type ='subscriber' AND post_status = 'publish' AND ID <= $max_subscriber_id" );
+            $remain_campaign_subscribers = $campaign_subscribers - $mail_recipients;
+
+            $sent_queue_items = wp_list_filter( $campaign_queue, array( 'sent_status' => 1 ) );
+            $this->assertEquals( count( $sent_queue_items ), $mail_recipients );
+
+            $pending_queue_items = wp_list_filter( $campaign_queue, array( 'sent_status' => 0 ) );
+            $this->assertTrue( count( $pending_queue_items ) >= $campaign_subscribers - $mail_recipients );
         }
 
     }
+
 
 }
