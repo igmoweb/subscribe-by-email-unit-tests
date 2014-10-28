@@ -6,7 +6,7 @@ if ( ! defined( 'WPMUDEV_DEV_DIR' ) )
 if ( is_file( WPMUDEV_DEV_DIR . '/plugins/subscribe-by-email/subscribe-by-email.php' ) )
     include_once WPMUDEV_DEV_DIR . '/plugins/subscribe-by-email/subscribe-by-email.php';
 
-class SBE_Init_Plugin extends WP_UnitTestCase {  
+class SBE_Sendings extends WP_UnitTestCase {  
 	function setUp() {  
 		parent::setUp(); 
 
