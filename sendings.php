@@ -3,6 +3,9 @@
 if ( ! defined( 'WPMUDEV_DEV_DIR' ) )
     define( 'WPMUDEV_DEV_DIR', '/vagrant/www/wordpress-wpmudev/wp-content' );
 
+if ( is_file( WPMUDEV_DEV_DIR . '/plugins/subscribe-by-email/subscribe-by-email.php' ) )
+    include_once WPMUDEV_DEV_DIR . '/plugins/subscribe-by-email/subscribe-by-email.php';
+
 class SBE_Init_Plugin extends WP_UnitTestCase {  
 	function setUp() {  
 		parent::setUp(); 
@@ -11,19 +14,11 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
 			$this->markTestSkipped( 'SBE plugin is not installed.' );
 		}
 
-         global $subscribe_by_email_plugin;
-
-        if ( ! class_exists( 'Incsub_Subscribe_By_Email' ) ) {
-            include WPMUDEV_DEV_DIR . '/plugins/subscribe-by-email/subscribe-by-email.php';
-        }
-        else {
-           
-            $subscribe_by_email_plugin = new Incsub_Subscribe_By_Email();
-        }
-
         $_SERVER['SERVER_NAME'] = 'example.com';
 
+        global $subscribe_by_email_plugin;
         $subscribe_by_email_plugin->init_plugin();
+
     } // end setup  
 
     function tearDown() {
@@ -139,6 +134,9 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
         return incsub_sbe_get_queue_items( $args );
     }
 
+    /**
+     * @group subscriptions
+     */
     function test_subscribe_users() {
         $this->insert_data_tests();
 
@@ -157,6 +155,9 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
         }
     }
 
+    /**
+     * @group subscriptions
+     */
     function test_update_subscribers() {
         $this->insert_data_tests();
         $post_types = $this->get_post_types();
@@ -642,114 +643,6 @@ class SBE_Init_Plugin extends WP_UnitTestCase {
             else
                 $this->assertEquals( 3, $status ); // Empty user content
         }
-    }
-
-    /**
-     * @group upgrade
-     */
-    function test_upgrade_to_29() {
-        global $subscribe_by_email_plugin;
-        update_option( 'incsub_sbe_version', '2.8.3' );
-
-        // We need some data to upgrade
-        global $wpdb;
-        global $wp_filesystem;
-
-        $log_table = $wpdb->prefix . 'subscriptions_log_table';
-
-        $args = $this->factory->post->generate_args();
-        $args['post_type'] = 'post';
-        $post_id_1 = $this->factory->post->create_object( $args );
-
-        $args = $this->factory->post->generate_args();
-        $args['post_type'] = 'book';
-        $post_id_2 = $this->factory->post->create_object( $args );
-
-        $args = $this->factory->post->generate_args();
-        $args['post_type'] = 'post';
-        $post_id_3 = $this->factory->post->create_object( $args );
-
-        $this->insert_data_tests();
-
-        $confirmed_subscribers = wp_list_filter( $this->raw_subscribers, array( 'flag' => true ) );
-
-        $max_subscriber_id = $wpdb->get_var( "SELECT MAX(ID) FROM $wpdb->posts WHERE post_type='subscriber' AND post_status='publish'" );
-
-        // First campaign (an immediately one)
-        $settings = maybe_serialize( array( 'posts_ids' => array( $post_id_1 ) ) );
-
-        $testing_logs = array(
-            array(
-                'mail_recipients' => 3,
-                'max_subscriber_id' => $max_subscriber_id,
-                'settings' => maybe_serialize( array( 'posts_ids' => array( $post_id_1 ) ) )
-            ),
-            array(
-                'mail_recipients' => 1,
-                'max_subscriber_id' => $max_subscriber_id - 2,
-                'settings' => maybe_serialize( array( 'posts_ids' => array( $post_id_2, $post_id_3 ) ) )
-            ),
-            array(
-                'mail_recipients' => count( $confirmed_subscribers ),
-                'max_subscriber_id' => $max_subscriber_id - 1,
-                'settings' => ''
-            )
-        );
-
-        foreach ( $testing_logs as $key => $testing_log ) {
-            extract( $testing_log );
-            $wpdb->query( 
-                "INSERT INTO $log_table (mail_subject, mail_recipients, mail_date, mail_settings, mails_list, max_email_ID ) 
-                VALUES ( 'New post', $mail_recipients, 1412775393, '$settings', '', $max_subscriber_id );"
-            );
-
-            $log_id = $wpdb->insert_id;
-
-            // Delete the old log
-            $log_file = INCSUB_SBE_LOGS_DIR . '/sbe_log_' . $log_id . '.log';
-            @unlink( $log_file );
-
-            // Write the log (only already sent emails)
-            reset( $confirmed_subscribers );
-            for( $i = 0; $i < $mail_recipients; $i++ ) {
-                $email = key( $confirmed_subscribers );
-                next( $confirmed_subscribers );
-
-                $date = current_time( 'timestamp' );
-                $line = $email . '|' . time() . '|1';
-                $fp = @fopen( $log_file, 'a+' );
-
-                @fwrite( $fp, $line . "\n" );
-                @fclose( $fp );
-            }
-
-            $testing_logs[ $key ]['log_id'] = $log_id;
-        } 
-
-        // Testing the upgrade
-        $subscribe_by_email_plugin->maybe_upgrade();        
-
-        $queue_table = $wpdb->base_prefix . 'subscriptions_queue';
-        $queue = $wpdb->get_results( "SELECT * FROM $queue_table" );
-
-        $queue_items = array();
-        foreach ( $queue as $item ) {
-            $queue_items[] = incsub_sbe_get_queue_item( $item->id );
-        }
-
-        foreach ( $testing_logs as $testing_log ) {
-            extract( $testing_log );
-            $campaign_queue = wp_list_filter( $queue_items, array( 'campaign_id' => $log_id ) );
-            $campaign_subscribers = $wpdb->get_var( "SELECT COUNT(ID) FROM $wpdb->posts WHERE post_type ='subscriber' AND post_status = 'publish' AND ID <= $max_subscriber_id" );
-            $remain_campaign_subscribers = $campaign_subscribers - $mail_recipients;
-
-            $sent_queue_items = wp_list_filter( $campaign_queue, array( 'sent_status' => 1 ) );
-            $this->assertEquals( count( $sent_queue_items ), $mail_recipients );
-
-            $pending_queue_items = wp_list_filter( $campaign_queue, array( 'sent_status' => 0 ) );
-            $this->assertTrue( count( $pending_queue_items ) >= $campaign_subscribers - $mail_recipients );
-        }
-
     }
 
 
